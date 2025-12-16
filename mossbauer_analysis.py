@@ -66,41 +66,55 @@ class Spectrum:
 
         return best_shift
 
-    def fold(self, trim=10, detrend_window=101, max_shift=200, split_search=10, clip_start=0):
+    def fold(self,
+             trim=10,
+             detrend_window=101,
+             max_shift=200,
+             split_search=10,
+             clip_start=0,
+             freeze_split=None,
+             freeze_shift=None
+    ):
         counts = self.raw_counts.copy()
         if clip_start > 0:
             counts[:clip_start] = np.nan
         n = len(counts)
         nominal_split = n // 2
 
-        best_score = -np.inf
-        best_split = nominal_split
-        best_shift = 0
+        if freeze_split is not None and freeze_shift is not None:
+            best_split = freeze_split
+            best_shift = freeze_shift
+            self.split_index = best_split
+            self.align_shift = best_shift
+        else:
+            best_score = -np.inf
+            best_split = nominal_split
+            best_shift = 0
 
-        for split in range(nominal_split - split_search, nominal_split + split_search + 1):
-            if split <= trim or split >= n - trim:
-                continue
+            for split in range(nominal_split - split_search, nominal_split + split_search + 1):
+                if split <= trim or split >= n - trim:
+                    continue
 
-            first = counts[:split]
-            second = counts[split:][::-1]
-            half_len = min(len(first), len(second))
+                first = counts[:split]
+                second = counts[split:][::-1]
+                half_len = min(len(first), len(second))
 
-            first = first[:half_len]
-            second = second[:half_len]
+                first = first[:half_len]
+                second = second[:half_len]
 
-            core_first = self._highpass(first[trim:-trim], detrend_window)
-            core_second = self._highpass(second[trim:-trim], detrend_window)
+                core_first = self._highpass(first[trim:-trim], detrend_window)
+                core_second = self._highpass(second[trim:-trim], detrend_window)
 
-            shift = self._best_shift_by_correlation(core_first, core_second, max_shift)
-            shifted = self._shift_with_nan(core_second, shift)
-            valid = np.isfinite(shifted) & np.isfinite(core_first)
-            if np.count_nonzero(valid) < 20:
-                continue
-            score = np.corrcoef(core_first[valid], shifted[valid])[0, 1]
-            if score > best_score:
-                best_score = score
-                best_split = split
-                best_shift = shift
+                shift = self._best_shift_by_correlation(core_first, core_second, max_shift)
+                shifted = self._shift_with_nan(core_second, shift)
+                valid = np.isfinite(shifted) & np.isfinite(core_first)
+                if np.count_nonzero(valid) < 20:
+                    continue
+                score = np.corrcoef(core_first[valid], shifted[valid])[0, 1]
+                if score > best_score:
+                    best_score = score
+                    best_split = split
+                    best_shift = shift
 
         self.split_index = best_split
         self.align_shift = best_shift
@@ -213,6 +227,29 @@ class LorentzianModel:
 
         return model
 
+class SextetModel(LorentzianModel):
+    def amplitudes(self, params):
+        """
+        parameter layout: [baseline, slope, fwhm, amp, eta, t1, d2, d3, d4, d5, d6]
+        """
+        tail = params[3:]
+        amp = tail[0]
+        eta = tail[1]
+        base = np.array([3, 2, 1, 1, 2, 3], dtype=float)
+        mod = np.array([np.exp(-eta), 1.0, np.exp(+eta), np.exp(+eta), 1.0, np.exp(-eta)], dtype=float)
+        ratios = base * mod
+        ratios /= ratios.mean()
+        return amp * ratios
+    
+    def centers(self, params):
+        tail = params[3:]
+        t1 = tail[2]
+        # log spacing of deltas
+        dlogs = tail[3:]
+        centers = [t1]
+        for dj in dlogs:
+            centers.append(centers[-1] + np.exp(dj))
+        return np.array(centers)
 
 def make_p0(spectrum, n_peaks, v_max, smooth_window=9, depth=0.05, fwhm0=0.25):
     counts = spectrum.folded_counts
@@ -223,6 +260,7 @@ def make_p0(spectrum, n_peaks, v_max, smooth_window=9, depth=0.05, fwhm0=0.25):
     smoothed = np.convolve(counts, np.ones(smooth_window) / smooth_window, mode="same")
 
     baseline = np.median(smoothed)
+
     dip_signal = np.maximum(baseline - smoothed, 0.0)
 
     min_separation = max(2, n // max(4 * n_peaks, 1))
@@ -233,6 +271,18 @@ def make_p0(spectrum, n_peaks, v_max, smooth_window=9, depth=0.05, fwhm0=0.25):
 
     strongest = indices[np.argsort(dip_signal[indices])[-n_peaks:]]
     center_guesses = np.sort(velocity[strongest])
+
+    if n_peaks == 6:
+        amp0 = depth * baseline
+        eta0 = 0.0
+        params = [baseline, 0.0, fwhm0, amp0, eta0, center_guesses[0]]
+        names = ["baseline", "slope", "fwhm", "amp", "eta", "t1"]
+        gaps = np.diff(center_guesses)
+        gaps = np.maximum(gaps, 1e-3)
+        for i, gap in enumerate(gaps, start=2):
+            params += [np.log(gap)]
+            names += [f"d{i}"]
+        return np.array(params), names
 
     amplitude = depth * baseline
     params = [baseline, 0.0, fwhm0, amplitude, center_guesses[0]]
@@ -249,6 +299,13 @@ def make_p0(spectrum, n_peaks, v_max, smooth_window=9, depth=0.05, fwhm0=0.25):
 
 
 def make_bounds(n_peaks, v_max):
+    if n_peaks == 6:
+        lower = [-np.inf, -np.inf, 0.01, 0.0, -2.0, -v_max]
+        upper = [ np.inf,  np.inf, 2.0,  np.inf,  2.0,  v_max]
+        for _ in range(5):
+            lower += [-20.0]
+            upper += [ 20.0]
+        return np.array(lower), np.array(upper)
     lower = [-np.inf, -np.inf, 0.01, 0.0, -v_max]
     upper = [ np.inf,  np.inf, 2.0,  np.inf,  v_max]
     for _ in range(2, n_peaks + 1):
@@ -278,7 +335,7 @@ def fit_spectrum(
         compute_cov=True
     ):
     velocity = velocity_axis_mask(spectrum, v_max)
-    model = LorentzianModel(n_peaks)
+    model = SextetModel(n_peaks) if n_peaks == 6 else LorentzianModel(n_peaks)
 
     p0, names = make_p0(spectrum, n_peaks, v_max)
     bounds = make_bounds(n_peaks, v_max)
@@ -332,17 +389,28 @@ def fit_spectrum(
     n_params = len(result.x)
     J = np.zeros((n_peaks, n_params))
 
-    # Parameter layout:
-    # [baseline, slope, fwhm, amp1, t1, amp2, d2, amp3, d3, ...]
-    t1_idx = 4
-    J[:, t1_idx] = 1.0  # all centers shift with t1
+    if n_peaks == 6:
+        # Sextet layout: [b, m, fwhm, amp, eta, t1, d2, d3, d4, d5, d6]
+        t1_idx = 5
+        J[:, t1_idx] = 1.0
 
-    # d(center_k)/d(dj) = exp(dj) for k >= j
-    # d2 is at index 6, d3 at 8, ...
-    for j in range(2, n_peaks + 1):
-        d_idx = 2 * j + 2   # j=2 -> 6, j=3 -> 8, ...
-        step = np.exp(result.x[d_idx])
-        J[j-1:, d_idx] = step
+        # d2..d6 are at indices 6..10
+        for j in range(2, 7):   # j = 2..6
+            d_idx = 4 + j       # j=2->6, j=3->7, ..., j=6->10
+            step = np.exp(result.x[d_idx])
+            J[j-1:, d_idx] = step
+    else:
+        # Parameter layout:
+        # [baseline, slope, fwhm, amp1, t1, amp2, d2, amp3, d3, ...]
+        t1_idx = 4
+        J[:, t1_idx] = 1.0  # all centers shift with t1
+
+        # d(center_k)/d(dj) = exp(dj) for k >= j
+        # d2 is at index 6, d3 at 8, ...
+        for j in range(2, n_peaks + 1):
+            d_idx = 2 * j + 2   # j=2 -> 6, j=3 -> 8, ...
+            step = np.exp(result.x[d_idx])
+            J[j-1:, d_idx] = step
 
     cov_centers = J @ cov @ J.T
     center_err = np.sqrt(np.clip(np.diag(cov_centers), 0.0, np.inf))
@@ -418,7 +486,7 @@ def parametric_bootstrap(
     loss: str = "poisson",  # "poisson" recommended for raw counts
 ):
     """
-    Full parametric bootstrap (raw space) consistent with your pipeline:
+    parametric bootstrap:
 
     0) Fit real data once: raw -> fold -> fit
     1) Build mean folded model mu_fold0 on the real folded velocity axis
@@ -437,6 +505,9 @@ def parametric_bootstrap(
     # ---- Fit the real data once ----
     spec0 = Spectrum(raw_counts)
     spec0.fold(clip_start=clip_start, **fold_kwargs)
+
+    freeze_split = spec0.split_index
+    freeze_shift = spec0.align_shift
 
     fit0 = fit_spectrum(
         spec0,
@@ -490,7 +561,12 @@ def parametric_bootstrap(
         # c) fold (includes split/shift instability)
         spec_b = Spectrum(raw_b)
         try:
-            spec_b.fold(clip_start=clip_start, **fold_kwargs)
+            spec_b.fold(
+                clip_start=clip_start,
+                **fold_kwargs,
+                freeze_split=freeze_split,
+                freeze_shift=freeze_shift
+            )
         except Exception:
             n_fail_fold += 1
             continue
@@ -540,6 +616,16 @@ def parametric_bootstrap(
         "n_fail_fold": n_fail_fold,
         "n_fail_fit": n_fail_fit,
     }
+def envelope_band(mu_samples, keep=0.68):
+    # mu_samples shape: (B, N)
+    med = np.median(mu_samples, axis=0)
+    # L2 distance to median curve as a simple ranking
+    d = np.sum((mu_samples - med)**2, axis=1)
+    k = max(1, int(np.floor(keep * len(d))))
+    idx = np.argsort(d)[:k]
+    lo = np.min(mu_samples[idx], axis=0)
+    hi = np.max(mu_samples[idx], axis=0)
+    return lo, hi
 
 def summarize_bootstrap(samples: np.ndarray, level: float = 0.68, axis: int = 0):
     """
@@ -564,7 +650,7 @@ def plot_results(
     ci_lo=None,
     ci_hi=None,
     ci_label="68% CI (bootstrap)",
-    ci_alpha=0.25,
+    ci_alpha=0.35,
 ):
     v = fit["velocity"]
     y = spectrum.folded_counts
@@ -617,7 +703,7 @@ if __name__ == "__main__":
         {
             "absorber": "steel",
             "file": "data/stainless_1950V_9mms_2d.asc",
-            "n_peaks": 6,
+            "n_peaks": 1,
             "v_max": 9.0,
             "v_max_err": 0.45
         },
@@ -646,8 +732,8 @@ if __name__ == "__main__":
             v_max_err=meas["v_max_err"],
             clip_start=5,
             fold_kwargs={"trim": 10, "detrend_window": 101, "max_shift": 200, "split_search": 10},
-            B=800,
-            seed=42,
+            B=200,
+            seed=1,
             loss="poisson",
         )
         # The fit for plotting should be the original fit returned by bootstrap
@@ -657,6 +743,7 @@ if __name__ == "__main__":
         # CI band for the mean curve
         v_star = boot["ci_grid"]
         mu_med, mu_lo, mu_hi = summarize_bootstrap(boot["mu_ci_samples"], level=0.68)
+        ci_lo, ci_hi = envelope_band(boot["mu_ci_samples"], keep=0.68)
 
         plot_results(
             spec0,
@@ -664,7 +751,7 @@ if __name__ == "__main__":
             title=f"Lorentzian Fit with 68% bootstrap CI ({meas['absorber'].capitalize()})",
             save_path=f"results/fit_plot_{meas['absorber']}_bootstrapCI.pdf",
             ci_grid=v_star,
-            ci_lo=mu_lo,
-            ci_hi=mu_hi,
+            ci_lo=ci_lo,
+            ci_hi=ci_hi,
             ci_label="68% CI (bootstrap)"
         )
