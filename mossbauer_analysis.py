@@ -477,6 +477,7 @@ def parametric_bootstrap(
     n_peaks: int,
     v_max: float,
     *,
+    physics: dict | None = None,
     v_max_err: float | None = None,
     clip_start: int = 0,
     fold_kwargs: dict | None = None,
@@ -486,18 +487,7 @@ def parametric_bootstrap(
     loss: str = "poisson",  # "poisson" recommended for raw counts
 ):
     """
-    parametric bootstrap:
-
-    0) Fit real data once: raw -> fold -> fit
-    1) Build mean folded model mu_fold0 on the real folded velocity axis
-    2) Estimate half-ratio r from the real raw scan
-    3) Build mean raw model mu_raw0 (length 2*folded_half_len) consistent with sum folding
-    4) For each replicate:
-         a) sample v_max (optional systematic)
-         b) draw synthetic raw counts ~ Poisson(mu_raw0)
-         c) fold using SAME fold() (captures split/shift variability + AND-mask)
-         d) fit using Poisson deviance (or WLS)
-         e) store centers, fwhm, and model curve on ci_grid for CI band
+    parametric bootstrap
     """
     rng = np.random.default_rng(seed)
     fold_kwargs = fold_kwargs or {}
@@ -540,11 +530,17 @@ def parametric_bootstrap(
     if ci_grid is None:
         ci_grid = v0.copy()
 
+    physics = physics or {}
+    physics_samples = {
+        key: [] for key, enabled in physics.items() if enabled
+    }
+
     centers_s = []
     fwhm_s = []
     params_s = []
     mu_ci_s = []
     v_max_s = []
+    y_pred = []
 
     n_fail_fold = 0
     n_fail_fit = 0
@@ -589,10 +585,19 @@ def parametric_bootstrap(
             n_fail_fit += 1
             continue
 
+        for key, enabled in (physics or {}).items():
+            if not enabled:
+                continue
+            value = PHYSICS_FUNCTIONS[key](fit_b["centers"], fit_b["fwhm"])
+            physics_samples[key].append(value)
+
+        mu_b = fit_b["model"](ci_grid, fit_b["params"])
+        mu_b = np.clip(mu_b, 0.0, np.inf)
         centers_s.append(fit_b["centers"])
         fwhm_s.append(fit_b["fwhm"])
         params_s.append(fit_b["params"])
-        mu_ci_s.append(fit_b["model"](ci_grid, fit_b["params"]))
+        mu_ci_s.append(mu_b)
+        y_pred.append(rng.poisson(mu_b).astype(float))
         v_max_s.append(v_max_b)
 
     centers_s = np.asarray(centers_s)
@@ -600,6 +605,10 @@ def parametric_bootstrap(
     params_s = np.asarray(params_s)
     mu_ci_s = np.asarray(mu_ci_s)
     v_max_s = np.asarray(v_max_s)
+    y_pred = np.asarray(y_pred)
+
+    for key in physics_samples:
+        physics_samples[key] = np.asarray(physics_samples[key])
 
     return {
         "fit0": fit0,
@@ -608,11 +617,13 @@ def parametric_bootstrap(
         "mu_fold_full": mu_fold_full,
         "mu_raw0": mu_raw0,
         "ci_grid": ci_grid,
+        "y_pred_samples": y_pred,
         "centers_samples": centers_s,
         "fwhm_samples": fwhm_s,
         "params_samples": params_s,
         "mu_ci_samples": mu_ci_s,
         "v_max_samples": v_max_s,
+        "physics_samples": physics_samples,
         "n_fail_fold": n_fail_fold,
         "n_fail_fit": n_fail_fit,
     }
@@ -627,7 +638,7 @@ def envelope_band(mu_samples, keep=0.68):
     hi = np.max(mu_samples[idx], axis=0)
     return lo, hi
 
-def summarize_bootstrap(samples: np.ndarray, level: float = 0.68, axis: int = 0):
+def summarize_samples(samples: np.ndarray, level: float = 0.68, axis: int = 0):
     """
     Percentile CI summary for bootstrap samples.
     level=0.68 gives 16-84%, level=0.95 gives 2.5-97.5%.
@@ -643,20 +654,21 @@ def summarize_bootstrap(samples: np.ndarray, level: float = 0.68, axis: int = 0)
 def plot_results(
     spectrum,
     fit,
+    physics,
     *,
     title="Title",
     save_path="results/fit_plot.pdf",
     ci_grid=None,
     ci_lo=None,
     ci_hi=None,
-    ci_label="68% CI (bootstrap)",
-    ci_alpha=0.35,
+    pi_hi=None,
+    pi_lo=None
 ):
     v = fit["velocity"]
     y = spectrum.folded_counts
     dy = spectrum.folded_sigma
     y_fit = fit["model"](v, fit["params"])
-
+    
     fig, (ax1, ax2) = plt.subplots(
         2, 1, sharex=True,
         gridspec_kw={"height_ratios": [1.85, 1], "hspace": 0.1}
@@ -664,19 +676,26 @@ def plot_results(
     title_artist = ax1.set_title(title, pad=20)
 
     # --- data + fit ---
-    ax1.errorbar(v, y, yerr=dy, fmt=".", ms=2, label="Data")
-    ax1.plot(v, y_fit, lw=1.3, label="Fit", zorder=10)
+    ax1.errorbar(v, y, yerr=dy, fmt=".", ms=2, zorder=4)
+    ax1.plot(v, y_fit, lw=1.3, label="Fit", zorder=5)
+    for c in fit["centers"]:
+        ax1.axvline(c, color="k", lw=0.8, ls=":", alpha=0.8)
 
     # --- optional CI ribbon (mean curve) ---
     if ci_grid is not None and ci_lo is not None and ci_hi is not None:
-        ax1.fill_between(ci_grid, ci_lo, ci_hi, alpha=ci_alpha, label=ci_label, zorder=2)
+        ax1.fill_between(ci_grid, ci_lo, ci_hi, color="#4D4D4D",alpha=0.5, label="68% CI", zorder=3)
 
+    if pi_lo is not None and pi_hi is not None:
+        ax1.fill_between(ci_grid, pi_lo, pi_hi, color="#9A9A9A",alpha=0.5, label="68% PI", zorder=2)
     ax1.set_ylabel("Counts")
-    ax1.grid(True)
+    ax1.grid(True, zorder=0)
+    ax1.ticklabel_format(axis="y", style="sci", scilimits=(0,0))
 
     # --- residuals (use intuitive normalized residuals even if fit used Poisson deviance) ---
     ax2.axhline(0, color="gray", lw=1)
     ax2.plot(v, (y - y_fit) / dy, ".", ms=3)
+    ax2.axhline(+1, color = "k", lw=0.8, ls=":", alpha=0.8)
+    ax2.axhline(-1, color = "k", lw=0.8, ls=":", alpha=0.8)
     ax2.set_xlabel("Velocity (mm/s)")
     ax2.set_ylabel(r"Residuals ($\sigma$)")
     ax2.grid(True)
@@ -686,10 +705,84 @@ def plot_results(
     title_box = title_artist.get_window_extent(fig.canvas.renderer)  # type: ignore
     title_y = title_box.y1 / fig.bbox.ymax
     fig.legend(loc="upper center", bbox_to_anchor=(0.5, title_y - 0.03), ncol=3)
-
     plt.savefig(save_path, backend="pgf")
     plt.close()
 
+def _physics_hyperfine_field(centers):
+    dv = centers[-1] - centers[0]
+    # doppler energy splitting
+    dE = E_GAMMA_J * (dv * 1e-3) / C
+    B_hf = dE / (2.0 * (MU_G - MU_E))
+    return B_hf
+
+def _physics_excited_magnetic_moment(centers):
+    dg = centers[5] - centers[0]
+    de = centers[4] - centers[1]
+
+    I_g, I_e = 0.5, 1.5
+
+    mu_e = MU_G * (I_e / I_g) * (np.abs(de) / np.abs(dg))
+    return mu_e
+
+def _physics_lifetime(fwhm):
+    GAMMA = E_GAMMA_J * (fwhm * 1e-3) / C
+    tau = HBAR / GAMMA
+    return tau
+
+def _physics_quadrupole_splitting(centers):
+    return centers[1] - centers[0]
+
+def _physics_isomer_shift(centers, ref_center=0.0):
+    return np.mean(centers) - ref_center
+
+# constants
+C = 299792458  # m/s
+E_GAMMA = 14.4e3  # eV
+E_GAMMA_J = E_GAMMA * 1.60218e-19  # J
+HBAR = 1.0545718e-34  # J.s
+MU_N = 5.0507837e-27  # J/T
+MU_G = 0.0906 * MU_N  # J/T
+MU_E = -0.154 * MU_N  # J/T
+
+PHYSICS_FUNCTIONS = {
+    "hyperfine_field": lambda centers, fwhm: _physics_hyperfine_field(centers),
+    "excited_magnetic_moment": lambda centers, fwhm: _physics_excited_magnetic_moment(centers),
+    "lifetime": lambda centers, fwhm: _physics_lifetime(fwhm),
+    "quadrupole": lambda centers, fwhm: _physics_quadrupole_splitting(centers),
+    "isomer_shift": lambda centers, fwhm: _physics_isomer_shift(centers),
+}
+PHYSICS_PRESENTATIONS = {
+    "hyperfine_field": {
+        "name": "Hyperfine Field",
+        "unit": "T",
+        "scale": lambda x: x,
+        "latex": r"B_{\mathrm{HF}}",
+    },
+    "excited_magnetic_moment": {
+        "name": "Excited State Magnetic Moment",
+        "unit": "J/T",
+        "scale": lambda x: x,
+        "latex": r"\mu_e",
+    },
+    "lifetime": {
+        "name": "Excited State Lifetime",
+        "unit": "ns",
+        "scale": lambda x: x * 1e9,
+        "latex": r"\tau",
+    },
+    "quadrupole": {
+        "name": "Quadrupole Splitting",
+        "unit": "mm/s",
+        "scale": lambda x: x,
+        "latex": r"\Delta Q",
+    },
+    "isomer_shift": {
+        "name": "Isomer Shift",
+        "unit": "mm/s",
+        "scale": lambda x: x,
+        "latex": r"\delta",
+    },
+}
 
 if __name__ == "__main__":
     measurements = [
@@ -698,28 +791,41 @@ if __name__ == "__main__":
             "file": "data/Fe_1950V_2d.asc",
             "n_peaks": 6,
             "v_max": 6.0,
-            "v_max_err": 0.3
+            "v_max_err": 0.3,
+            "physics": {
+                "hyperfine_field": True,
+                "excited_magnetic_moment": True
+            }
         },
         {
             "absorber": "steel",
             "file": "data/stainless_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "v_max_err": 0.45
+            "v_max_err": 0.45,
+            "physics": {
+                "lifetime": True
+            }
         },
         {
             "absorber": "ferrocyanide",
             "file": "data/potassium_ferrocyanide_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "v_max_err": 0.45
+            "v_max_err": 0.45,
+            "physics": {
+                "isomer_shift": True
+            }
         },
         {
             "absorber": "sulphate",
             "file": "data/ferrous_sulphate_1950V_9mms_2d.asc",
             "n_peaks": 2,
             "v_max": 9.0,
-            "v_max_err": 0.45
+            "v_max_err": 0.45,
+            "physics": {
+                "quadrupole": True
+            }
         },
     ]
     for meas in measurements:
@@ -730,9 +836,10 @@ if __name__ == "__main__":
             n_peaks=meas["n_peaks"],
             v_max=meas["v_max"],
             v_max_err=meas["v_max_err"],
+            physics=meas.get("physics", {}),
             clip_start=5,
             fold_kwargs={"trim": 10, "detrend_window": 101, "max_shift": 200, "split_search": 10},
-            B=200,
+            B=1000,
             seed=1,
             loss="poisson",
         )
@@ -742,16 +849,27 @@ if __name__ == "__main__":
 
         # CI band for the mean curve
         v_star = boot["ci_grid"]
-        mu_med, mu_lo, mu_hi = summarize_bootstrap(boot["mu_ci_samples"], level=0.68)
+        mu_med, mu_lo, mu_hi = summarize_samples(boot["mu_ci_samples"], level=0.68)
         ci_lo, ci_hi = envelope_band(boot["mu_ci_samples"], keep=0.68)
+        pi_lo, pi_hi = envelope_band(boot["y_pred_samples"], keep=0.68)
+
+        for key, samples in boot["physics_samples"].items():
+            meta = PHYSICS_PRESENTATIONS.get(key, None)
+            if meta is None:
+                continue
+            values = meta["scale"](samples)
+            med, qlo, qhi = summarize_samples(values, level=0.68)
+            print(f"  {meta['name']} = {med:.6g} 68% CI [{qlo:.6g}, {qhi:.6g}] {meta['unit']} (deltas: +{(med - qlo):.6g}/-{(qhi - med):.6g})")
 
         plot_results(
             spec0,
             fit0,
-            title=f"Lorentzian Fit with 68% bootstrap CI ({meas['absorber'].capitalize()})",
+            physics=boot["physics_samples"],
+            title=f"{meas['absorber'].capitalize()}: Lorentzian Fit and Parametric Bootstrap",
             save_path=f"results/fit_plot_{meas['absorber']}_bootstrapCI.pdf",
             ci_grid=v_star,
             ci_lo=ci_lo,
             ci_hi=ci_hi,
-            ci_label="68% CI (bootstrap)"
+            pi_lo=pi_lo,
+            pi_hi=pi_hi,
         )
