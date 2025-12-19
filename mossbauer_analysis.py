@@ -410,8 +410,7 @@ def monte_carlo(
         n_peaks=n_peaks,
         v_max=v_max,
         v_max_err=None,
-        loss=loss,
-        compute_cov=False,  # keep for diagnostics if you like
+        loss=loss  # keep for diagnostics if you like
     )
     # masked velocity axis
     v0 = fit0["velocity"]
@@ -809,8 +808,8 @@ def main():
             fold_kwargs={
                 "trim": 10,
                 "detrend_window": 101,
-                "max_shift": 200,
-                "split_search": 10,
+                "max_shift": 0,
+                "split_search": 0,
             },
             B=1000,
             seed=1,
