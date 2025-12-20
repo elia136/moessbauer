@@ -22,127 +22,35 @@ class Spectrum:
         self.folded_counts = None
         self.folded_sigma = None
         self.folded_idx = None
-        self.split_index = None
-        self.align_shift = None
 
-    # ---- Folding helpers ----
-    @staticmethod
-    def _highpass(signal, window):
-        """Simple high-pass filter for detrending using moving average subtraction."""
-        window = max(5, int(window) | 1)
-        kernel = np.ones(window) / window
-        moving_avg = np.convolve(signal, kernel, mode="same")
-        return signal - moving_avg
-
-    @staticmethod
-    def _shift_with_nan(signal, shift):
-        """Shift a 1D array, filling empty bins with NaN."""
-        shifted = np.full_like(signal, np.nan)
-        if shift < 0:
-            shifted[:shift] = signal[-shift:]
-        elif shift > 0:
-            shifted[shift:] = signal[:-shift]
-        else:
-            shifted[:] = signal
-        return shifted
-
-    @staticmethod
-    def _best_shift_by_correlation(reference, moving, max_shift):
-        """Find the best shift between two signals by maximizing their correlation"""
-        # normalize reference
-        reference = reference - np.mean(reference)
-        reference_norm = np.linalg.norm(reference) + 1e-12
-        best_shift = 0
-        best_score = -np.inf
-        # search shifts within max_shift range
-        for shift in range(-max_shift, max_shift + 1):
-            # apply shift and mask invalid bins
-            shifted = Spectrum._shift_with_nan(moving, shift)
-            valid = np.isfinite(shifted) & np.isfinite(reference)
-            if np.count_nonzero(valid) < 20:
-                continue
-            m = shifted[valid] - np.mean(shifted[valid])
-            # cosine similarity
-            score = np.dot(reference[valid], m) / (
-                reference_norm * (np.linalg.norm(m) + 1e-12)
-            )
-            if score > best_score:
-                best_score = score
-                best_shift = shift
-
-        return best_shift
+    @classmethod
+    def from_folded(cls, counts, sigma, idx, half_len):
+        """Create Spectrum instance from folded data."""
+        obj = cls(np.zeros(2 * int(half_len), dtype=float))
+        obj.folded_counts = np.asarray(counts, dtype=float)
+        obj.folded_sigma = np.asarray(sigma, dtype=float)
+        obj.folded_idx = np.asarray(idx, dtype=int)
+        obj.folded_half_len = int(half_len)
+        obj.split_index = int(half_len)
+        obj.align_shift = 0
+        return obj
 
     # ---- Main folding method ----
-    def fold(
-        self,
-        trim=10,
-        detrend_window=101,
-        max_shift=200,
-        split_search=10,
-        clip_start=0,
-        freeze_split=None,
-        freeze_shift=None,
-    ):
+    def fold(self, clip_start=0):
         """Fold the raw spectrum by finding the optimal split and alignment."""
         counts = self.raw_counts.copy()
         if clip_start > 0:
             counts[:clip_start] = np.nan
         n = len(counts)
-        nominal_split = n // 2
-
-        # use frozen split/shift if provided to avoid instability in monte carlo
-        if freeze_split is not None and freeze_shift is not None:
-            best_split = freeze_split
-            best_shift = freeze_shift
-            self.split_index = best_split
-            self.align_shift = best_shift
-        # otherwise search for best split and shift
-        else:
-            best_score = -np.inf
-            best_split = nominal_split
-            best_shift = 0
-
-            # search for best split point within provided range
-            for split in range(
-                nominal_split - split_search, nominal_split + split_search + 1
-            ):
-                if split <= trim or split >= n - trim:
-                    continue
-                # extract halves
-                first = counts[:split]
-                second = counts[split:][::-1]
-                # make them equal length
-                half_len = min(len(first), len(second))
-                first = first[:half_len]
-                second = second[:half_len]
-                # detrend to make shift finding more robust and less sensitive to baseline offsets
-                core_first = self._highpass(first[trim:-trim], detrend_window)
-                core_second = self._highpass(second[trim:-trim], detrend_window)
-                # find best alignment shift
-                shift = self._best_shift_by_correlation(
-                    core_first, core_second, max_shift
-                )
-                # shift second half and mask invalid bins
-                shifted = self._shift_with_nan(core_second, shift)
-                valid = np.isfinite(shifted) & np.isfinite(core_first)
-                if np.count_nonzero(valid) < 20:
-                    continue
-                # compute correlation score
-                score = np.corrcoef(core_first[valid], shifted[valid])[0, 1]
-                if score > best_score:
-                    best_score = score
-                    best_split = split
-                    best_shift = shift 
-        # store best split and shift
-        self.split_index = best_split  
-        self.align_shift = best_shift
-        # perform final folding with best parameters
-        first = counts[:best_split]
-        second = counts[best_split:][::-1]
+        # split and fold in the middle, no shift
+        self.split_index = n // 2
+        self.align_shift = 0
+        first = counts[:self.split_index]
+        second = counts[self.split_index:][::-1]
+        # make halves equal length
         half_len = min(len(first), len(second))
         first = first[:half_len]
         second = second[:half_len]
-        second = self._shift_with_nan(second, best_shift)
         # sum halves and ignore nans
         folded_full = np.nan_to_num(first, nan=0.0) + np.nan_to_num(second, nan=0.0)
         # poisson errors sig ~ sqrt(counts)
@@ -162,7 +70,7 @@ class Spectrum:
         return self.folded_counts, self.folded_sigma
 
 # ---- Velocity axis conversions ----
-def velocity_axis_mask(spectrum, v_max):
+def velocity_axis(spectrum, v_max):
     """Generate velocity axis for folded spectrum, accounting for masked nan bins."""
     if spectrum.folded_idx is None:
         raise RuntimeError("Call fold() first")
@@ -170,16 +78,6 @@ def velocity_axis_mask(spectrum, v_max):
     center = half_len / 2.0
     scale = float(v_max) / (half_len / 2.0)
     return scale * (spectrum.folded_idx - center)
-
-def velocity_axis_full(spectrum, v_max):
-    """Generate velocity axis for folded spectrum, including nan bins."""
-    if spectrum.folded_idx is None:
-        raise RuntimeError("Call fold() first")
-    half_len = getattr(spectrum, "folded_half_len", None)
-    center = half_len / 2.0
-    scale = float(v_max) / (half_len / 2.0)
-    folded_idx_full = np.arange(half_len)
-    return scale * (folded_idx_full - center)
 
 def velocity_to_bin_offset(velocity, half_len, v_max):
     """Convert velocity (mm/s) to bin offset from center."""
@@ -249,7 +147,7 @@ def make_p0(spectrum, n_peaks, v_max, smooth_window=9, depth=0.05, fwhm0=0.25):
     """Generate initial parameter guesses for fitting."""
     counts = spectrum.folded_counts
     n = len(counts)
-    velocity = velocity_axis_mask(spectrum, v_max)
+    velocity = velocity_axis(spectrum, v_max)
     # Smooth the spectrum to find dips
     smooth_window = max(3, int(smooth_window) | 1)
     smoothed = np.convolve(counts, np.ones(smooth_window) / smooth_window, mode="same")
@@ -290,7 +188,7 @@ def make_bounds(n_peaks, v_max):
 
 def fit_spectrum(spectrum, n_peaks, v_max, v_max_err=None, *, loss="wls"):
     """Fit the folded Mössbauer spectrum using weighted least squares or Poisson deviance."""
-    velocity = velocity_axis_mask(spectrum, v_max)
+    velocity = velocity_axis(spectrum, v_max)
     model = LorentzianModel(n_peaks)
     # initial parameters and bounds
     p0, names = make_p0(spectrum, n_peaks, v_max)
@@ -332,50 +230,6 @@ def fit_spectrum(spectrum, n_peaks, v_max, v_max_err=None, *, loss="wls"):
     return output
 
 # ---- Monte Carlo bootstrap ----
-def estimate_half_ratio(raw_counts: np.ndarray, clip_start: int = 0) -> float:
-    """
-    Estimate half ratio from initial raw spectrum counts.
-    """
-    x = np.asarray(raw_counts, dtype=float).copy()
-    # clip initial bins if needed
-    if clip_start > 0:
-        x[:clip_start] = np.nan
-    n = len(x)
-    n2 = n // 2
-    first = x[:n2]
-    second = x[n2:]
-    # sum ignoring nans
-    s1 = np.nansum(first)
-    s2 = np.nansum(second)
-    denom = s1 + s2
-    if denom <= 0:
-        return 0.5
-    r = float(s1 / denom)
-    return float(np.clip(r, 0.05, 0.95))
-
-def construct_raw_spectrum(mu_fold: np.ndarray, r: float) -> np.ndarray:
-    """
-    Construct a mean RAW spectrum of length 2*L from a mean folded spectrum mu_fold (length L),
-    consistent with sum folding.
-
-    We assume the folded expectation splits into two independent Poisson halves:
-        E[N1_k] = r * mu_fold_k
-        E[N2_k] = (1-r) * mu_fold_k
-
-    Raw layout expected by your folding code:
-        first half (forward):  mu_first = r * mu_fold
-        second half (reverse): mu_second[::-1] = (1-r) * mu_fold   -> so raw second half is reversed
-    """
-    mu_fold = np.asarray(mu_fold, dtype=float)
-    mu_fold = np.clip(mu_fold, 0.0, np.inf)
-
-    mu_first = r * mu_fold
-    mu_second = (1.0 - r) * mu_fold
-
-    # raw = [first_half, second_half_reversed]
-    return np.concatenate([mu_first, mu_second[::-1]])
-
-
 def monte_carlo(
     raw_counts: np.ndarray,
     n_peaks: int,
@@ -384,11 +238,10 @@ def monte_carlo(
     physics: dict | None = None,
     reference_bin_offset_samples: np.ndarray | None = None,
     v_max_err: float | None = None,
+    model_systematic: bool = True,
     clip_start: int = 0,
-    fold_kwargs: dict | None = None,
     B: int = 500,
     seed: int = 0,
-    ci_grid: np.ndarray | None = None,
     loss: str = "poisson",
 ):
     """
@@ -396,14 +249,11 @@ def monte_carlo(
     Sampling includes Poisson noise, velocity scale systematics, and evaluation of physsics quantities.
     """
     rng = np.random.default_rng(seed)
-    fold_kwargs = fold_kwargs or {}
 
     # initial fold of the original raw spectrum
     spec0 = Spectrum(raw_counts)
-    spec0.fold(clip_start=clip_start, **fold_kwargs)
-    # freeze split/shift to avoid instability in bootstrap replicates
-    freeze_split = spec0.split_index
-    freeze_shift = spec0.align_shift
+    spec0.fold(clip_start=clip_start)
+
     # initial fit of the folded spectrum
     fit0 = fit_spectrum(
         spec0,
@@ -414,18 +264,12 @@ def monte_carlo(
     )
     # masked velocity axis
     v0 = fit0["velocity"]
-    # full velocity axis (including nan bins)
-    v_full = velocity_axis_full(spec0, v_max)
-    # mean counts on full folded axis
-    mu_fold_full = fit0["model"](v_full, fit0["params"])
-    mu_fold_full = np.clip(mu_fold_full, 0.0, np.inf)
-    # estimate half ratio from original raw spectrum
-    r = estimate_half_ratio(raw_counts, clip_start=clip_start)
-    # construct new raw spectrum mean from folded mean and half ratio
-    mu_raw0 = construct_raw_spectrum(mu_fold_full, r=r)
-    # define ci_grid to be the original masked velocity axis if not provided
-    if ci_grid is None:
-        ci_grid = v0.copy()
+    ci_grid = v0.copy()
+    mu0 = fit0["model"](v0, fit0["params"])
+    mu0 = np.clip(mu0, 0.0, np.inf)
+
+    idx0 = spec0.folded_idx.copy()
+    half_len0 = spec0.folded_half_len
     # prepare storage for bootstrap samples
     physics = physics or {}
     physics_samples = {key: [] for key, enabled in physics.items() if enabled}
@@ -433,9 +277,10 @@ def monte_carlo(
     fwhm_s = []
     rel_intensity_s = []
     params_s = []
-    mu_ci_s = []
+    mu_s = []
     v_max_s = []
-    y_pred_s = []
+    mu_star_s = []
+    mu_pred_s = []
     # counters for failed folds/fits
     n_fail_fold = 0
     n_fail_fit = 0
@@ -443,31 +288,17 @@ def monte_carlo(
     for _ in range(B):
         # systematic: sample v_max
         v_max_b = v_max
-        if v_max_err is not None and v_max_err > 0:
+        if model_systematic and v_max_err is not None:
             v_max_b = float(rng.normal(v_max, v_max_err))
-
-        # statistical: Poisson synthetic raw counts
-        raw_b = rng.poisson(mu_raw0).astype(float)
-
-        # fold spectrum with frozen split/shift to avoid instability
-        spec_b = Spectrum(raw_b)
-        try:
-            spec_b.fold(
-                clip_start=clip_start,
-                **fold_kwargs,
-                freeze_split=freeze_split,
-                freeze_shift=freeze_shift,
-            )
-        except Exception:
-            n_fail_fold += 1
-            continue
-
-        if spec_b.folded_counts is None or len(spec_b.folded_counts) < max(
-            30, 6 * n_peaks
-        ):
-            n_fail_fold += 1
-            continue
-
+        n_b = rng.poisson(mu0).astype(float)
+        sigma_b = np.sqrt(np.clip(n_b, 1.0, np.inf))
+        spec_b = Spectrum.from_folded(
+            counts=n_b,
+            sigma=sigma_b,
+            idx=idx0,
+            half_len=half_len0,
+        )
+        v_b = velocity_axis(spec_b, v_max_b)
         # fit folded spectrum
         try:
             fit_b = fit_spectrum(
@@ -518,22 +349,28 @@ def monte_carlo(
             physics_samples[key].append(value)
 
         # evaluate model on ci_grid
-        mu_b = fit_b["model"](ci_grid, fit_b["params"])
+        mu_b = fit_b["model"](v_b, fit_b["params"])
         mu_b = np.clip(mu_b, 0.0, np.inf)
+        # interpolate to ci_grid
+        mu_star_b = np.interp(ci_grid, v_b, mu_b)
+        mu_star_b = np.clip(mu_star_b, 0.0, np.inf)
+
         centers_s.append(fit_b["centers"])
         fwhm_s.append(fit_b["fwhm"])
         params_s.append(fit_b["params"])
-        mu_ci_s.append(mu_b)
-        y_pred_s.append(rng.poisson(mu_b).astype(float))
+        mu_s.append(mu_b)
+        mu_pred_s.append(rng.poisson(mu_star_b).astype(float))
+        mu_star_s.append(mu_star_b)
         v_max_s.append(v_max_b)
     # convert lists to arrays
     centers_s = np.asarray(centers_s)
     fwhm_s = np.asarray(fwhm_s)
     params_s = np.asarray(params_s)
     rel_intensity_s = np.asarray(rel_intensity_s)
-    mu_ci_s = np.asarray(mu_ci_s)
+    mu_s = np.asarray(mu_s)
     v_max_s = np.asarray(v_max_s)
-    y_pred_s = np.asarray(y_pred_s)
+    mu_pred_s = np.asarray(mu_pred_s)
+    mu_star_s = np.asarray(mu_star_s)
     for key in physics_samples:
         physics_samples[key] = np.asarray(physics_samples[key])
 
@@ -541,19 +378,17 @@ def monte_carlo(
     out = {
         "fit0": fit0,
         "spec0": spec0,
-        "half_ratio_r": r,
-        "mu_fold_full": mu_fold_full,
-        "mu_raw0": mu_raw0,
-        "ci_grid": ci_grid,
-        "y_pred_samples": y_pred_s,
+        "mu0": mu0,
+        "mu_samples": mu_s,
+        "mu_conf_samples": mu_star_s,
+        "mu_pred_samples": mu_pred_s,
         "centers_samples": centers_s,
+        "ci_grid": ci_grid,
         "fwhm_samples": fwhm_s,
         "params_samples": params_s,
         "rel_intensity_samples": rel_intensity_s,
-        "mu_ci_samples": mu_ci_s,
         "v_max_samples": v_max_s,
         "physics_samples": physics_samples,
-        "n_fail_fold": n_fail_fold,
         "n_fail_fit": n_fail_fit,
     }
 
@@ -590,7 +425,6 @@ def plot_results(
     *,
     title="Title",
     save_path="results/fit_plot.pdf",
-    ci_grid=None,
     ci_lo=None,
     ci_hi=None,
     pi_hi=None,
@@ -615,14 +449,12 @@ def plot_results(
     for c in fit["centers"]:
         ax1.axvline(c, color="k", lw=0.8, ls=":", alpha=0.8)
     # --- optional CI ribbon (mean curve) ---
-    if ci_grid is not None and ci_lo is not None and ci_hi is not None:
-        ax1.fill_between(
-            ci_grid, ci_lo, ci_hi, color="#4D4D4D", alpha=0.5, label="68% CI", zorder=3
-        )
+    if ci_lo is not None and ci_hi is not None:
+        ax1.fill_between(v, ci_lo, ci_hi, color="#4D4D4D", alpha=0.4, label="68% CI", zorder=3)
     # --- optional PI ribbon (predicted counts) ---
     if pi_lo is not None and pi_hi is not None:
         ax1.fill_between(
-            ci_grid, pi_lo, pi_hi, color="#9A9A9A", alpha=0.5, label="68% PI", zorder=2
+            v, pi_lo, pi_hi, color="#4D4D4D", alpha=0.2, label="95% PI", zorder=2
         )
     ax1.set_ylabel("Counts")
     ax1.grid(True, zorder=0)
@@ -804,13 +636,7 @@ def main():
             v_max_err=meas["v_max_err"],
             physics=meas.get("physics", {}),
             reference_bin_offset_samples=ref_bin_samples,
-            clip_start=5,
-            fold_kwargs={
-                "trim": 10,
-                "detrend_window": 101,
-                "max_shift": 0,
-                "split_search": 0,
-            },
+            clip_start=2,
             B=1000,
             seed=1,
             loss="poisson",
@@ -821,12 +647,6 @@ def main():
         # The fit for plotting should be the original fit returned by bootstrap
         fit0 = boot["fit0"]
         spec0 = boot["spec0"]
-
-        # CI band for the mean curve
-        v_star = boot["ci_grid"]
-        mu_med, mu_lo, mu_hi = summarize_samples(boot["mu_ci_samples"], level=0.68)
-        ci_lo, ci_hi = envelope_band(boot["mu_ci_samples"], keep=0.68)
-        pi_lo, pi_hi = envelope_band(boot["y_pred_samples"], keep=0.68)
 
         centers_med, centers_lo, centers_hi = summarize_samples(
             boot["centers_samples"], level=0.68
@@ -866,17 +686,19 @@ def main():
                 f"  Rel. Intensity {i+1} = {ri_med:.6g} 68% CI [{ri_lo:.6g}, {ri_hi:.6g}] (deltas: +{(ri_med - ri_lo):.6g}/-{(ri_hi - ri_med):.6g})"
             )
         print(
-            f"  (Failed folds: {boot['n_fail_fold']}, Failed fits: {boot['n_fail_fit']})"
+            f"  (Failed fits: {boot['n_fail_fit']})"
         )
         print("----------------------------")
 
+        v_star = boot["ci_grid"]
+        _, ci_lo, ci_hi = summarize_samples(boot["mu_conf_samples"], level=0.68)
+        _, pi_lo, pi_hi = summarize_samples(boot["mu_pred_samples"], level=0.95)
         plot_results(
             spec0,
             fit0,
             physics=boot["physics_samples"],
             title=f"{meas['absorber'].capitalize()}: Lorentzian Fit and Monte Carlo CI",
             save_path=f"results/fit_plot_{meas['absorber']}_bootstrapCI.pdf",
-            ci_grid=v_star,
             ci_lo=ci_lo,
             ci_hi=ci_hi,
             pi_lo=pi_lo,
