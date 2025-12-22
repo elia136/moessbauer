@@ -592,11 +592,18 @@ def main():
             },
         },
         {
-            "absorber": "steel",
-            "file": "data/stainless_1950V_9mms_2d.asc",
-            "n_peaks": 1,
+            "absorber": "magnetized_iron",
+            "file": "data/Fe_1950V_9mms_1d_magn.asc",
+            "n_peaks": 6,
             "v_max": 9.0,
             "v_max_err": 0.45,
+        },
+        {
+            "absorber": "steel",
+            "file": "data/stainless_steel_1950V_4mms_3d.asc",
+            "n_peaks": 1,
+            "v_max": 4.0,
+            "v_max_err": 0.4,
             "physics": {"lifetime": True},
         },
         {
