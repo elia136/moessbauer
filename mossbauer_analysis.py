@@ -580,7 +580,8 @@ PHYSICS_PRESENTATIONS = {
 def main():
     measurements = [
         {
-            "absorber": "iron",
+            "suffix": "iron",
+            "label": "Natural Iron",
             "file": "data/Fe_1950V_2d.asc",
             "n_peaks": 6,
             "v_max": 6.0,
@@ -592,14 +593,20 @@ def main():
             },
         },
         {
-            "absorber": "magnetized_iron",
+            "suffix": "magnetized_iron",
+            "label": "Magnetized Iron",
             "file": "data/Fe_1950V_9mms_1d_magn.asc",
             "n_peaks": 6,
             "v_max": 9.0,
             "v_max_err": 0.45,
+            "physics": {
+                "hyperfine_field": True,
+                "excited_magnetic_moment": True,
+            },
         },
         {
-            "absorber": "steel",
+            "suffix": "steel",
+            "label": "Stainless Steel",
             "file": "data/stainless_steel_1950V_4mms_3d.asc",
             "n_peaks": 1,
             "v_max": 4.0,
@@ -607,7 +614,8 @@ def main():
             "physics": {"lifetime": True},
         },
         {
-            "absorber": "ferrocyanide",
+            "suffix": "ferrocyanide",
+            "label": "Potassium Ferrocyanide",
             "file": "data/potassium_ferrocyanide_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
@@ -615,7 +623,8 @@ def main():
             "physics": {"isomer_shift": True},
         },
         {
-            "absorber": "sulphate",
+            "suffix": "sulphate",
+            "label": "Ferrous Sulphate",
             "file": "data/ferrous_sulphate_1950V_9mms_2d.asc",
             "n_peaks": 2,
             "v_max": 9.0,
@@ -623,7 +632,8 @@ def main():
             "physics": {"quadrupole": True},
         },
         {
-            "absorber": "dust",
+            "suffix": "dust",
+            "label": "Mars Soil Simulant",
             "file": "data/space_dust_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
@@ -633,7 +643,7 @@ def main():
     ]
     ref_bin_samples = None
     for meas in measurements:
-        print(f"Absorber: {meas['absorber']}")
+        print(f"Absorber: {meas['label']}")
         raw_counts = np.loadtxt(meas["file"])
         # perform Monte Carlo bootstrap
         boot = monte_carlo(
@@ -704,8 +714,8 @@ def main():
             spec0,
             fit0,
             physics=boot["physics_samples"],
-            title=f"{meas['absorber'].capitalize()}: Lorentzian Fit and Monte Carlo CI",
-            save_path=f"results/fit_plot_{meas['absorber']}_bootstrapCI.pdf",
+            title=f"{meas['label']}: Lorentzian Fit and Monte Carlo CI",
+            save_path=f"results/fit_plot_{meas['suffix']}_bootstrapCI.pdf",
             ci_lo=ci_lo,
             ci_hi=ci_hi,
             pi_lo=pi_lo,
