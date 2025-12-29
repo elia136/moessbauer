@@ -74,19 +74,19 @@ def velocity_axis(spectrum, v_max):
     if spectrum.folded_idx is None:
         raise RuntimeError("Call fold() first")
     half_len = getattr(spectrum, "folded_half_len", None)
-    center = half_len / 2.0
-    scale = float(v_max) / (half_len / 2.0)
+    center = (half_len - 1) / 2.0
+    scale = (2.0 * v_max) / (half_len - 1)
     return scale * (spectrum.folded_idx - center)
 
 def velocity_to_bin_offset(velocity, half_len, v_max):
     """Convert velocity (mm/s) to bin offset from center."""
-    center = half_len / 2.0
-    scale = v_max / center
+    center = (half_len - 1) / 2.0
+    scale = (2.0 * v_max) / (half_len - 1)
     return velocity / scale
 
 def bin_offset_to_velocity(bin_offset, half_len, v_max):
     """Convert bin offset from center to velocity (mm/s)."""
-    scale = v_max / (half_len / 2.0)
+    scale = (2.0 * v_max) / (half_len - 1)
     return bin_offset * scale
 
 # ---- Lorentzian model and fitting ----
@@ -185,9 +185,9 @@ def make_bounds(n_peaks, v_max):
         upper += [np.inf, 20.0]
     return np.array(lower), np.array(upper)
 
-def fit_spectrum(spectrum, n_peaks, v_max, *, loss="wls"):
+def fit_spectrum(spectrum, n_peaks, v_max, *, loss="wls", velocity_override=None):
     """Fit the folded Mössbauer spectrum using weighted least squares or Poisson deviance."""
-    velocity = velocity_axis(spectrum, v_max)
+    velocity = velocity_axis(spectrum, v_max) if velocity_override is None else velocity_override
     model = LorentzianModel(n_peaks)
     # initial parameters and bounds
     p0, names = make_p0(spectrum, n_peaks, v_max)
@@ -234,10 +234,9 @@ def monte_carlo(
     n_peaks: int,
     v_max: float,
     *,
+    systematics: dict,
     physics: dict | None = None,
     reference_bin_offset_samples: np.ndarray | None = None,
-    sig_v: float | None = None,
-    model_systematic: bool = True,
     clip_start: int = 0,
     B: int = 500,
     seed: int = 0,
@@ -270,6 +269,12 @@ def monte_carlo(
     half_len0 = spec0.folded_half_len
     # prepare storage for bootstrap samples
     physics = physics or {}
+    if physics.get("isomer_shift", False) and reference_bin_offset_samples is None:
+        raise ValueError(
+            "physics['isomer_shift']=True requires reference_bin_offset_samples (in bins). "
+            "Run the reference spectrum first with physics['reference_bin_offset']=True "
+            "and pass its samples here."
+        )
     physics_samples = {key: [] for key, enabled in physics.items() if enabled}
     centers_s = []
     fwhm_s = []
@@ -277,6 +282,7 @@ def monte_carlo(
     params_s = []
     mu_s = []
     v_max_s = []
+    v0_s = []
     mu_star_s = []
     mu_pred_s = []
     # counters for failed folds/fits
@@ -285,9 +291,14 @@ def monte_carlo(
     # --- Monte Carlo loop ---
     for _ in range(B):
         # systematic: sample v_max
-        v_max_b = v_max
-        if model_systematic and sig_v is not None:
-            v_max_b = float(rng.normal(v_max, sig_v))
+        v_max_b, v0_b = draw_systematics(
+            rng,
+            v_max,
+            scale_percent=systematics["scale_percent"],
+            linearity_percent=systematics["linearity_percent"],
+            offset_bins_sigma=systematics["offset_bins_sigma"],
+            n_bins=spec0.folded_half_len,
+        )
         n_b = rng.poisson(mu0).astype(float)
         sigma_b = np.sqrt(np.clip(n_b, 1.0, np.inf))
         spec_b = Spectrum.from_folded(
@@ -296,14 +307,15 @@ def monte_carlo(
             idx=idx0,
             half_len=half_len0,
         )
-        v_b = velocity_axis(spec_b, v_max_b)
+        v_b = velocity_axis(spec_b, v_max_b) + v0_b
         # fit folded spectrum
         try:
             fit_b = fit_spectrum(
                 spec_b,
                 n_peaks=n_peaks,
                 v_max=v_max_b,
-                loss=loss
+                loss=loss,
+                velocity_override=v_b,
             )
         except Exception:
             n_fail_fit += 1
@@ -359,6 +371,7 @@ def monte_carlo(
         mu_pred_s.append(rng.poisson(mu_star_b).astype(float))
         mu_star_s.append(mu_star_b)
         v_max_s.append(v_max_b)
+        v0_s.append(v0_b)
     # convert lists to arrays
     centers_s = np.asarray(centers_s)
     fwhm_s = np.asarray(fwhm_s)
@@ -366,6 +379,7 @@ def monte_carlo(
     rel_intensity_s = np.asarray(rel_intensity_s)
     mu_s = np.asarray(mu_s)
     v_max_s = np.asarray(v_max_s)
+    v0_s = np.asarray(v0_s)
     mu_pred_s = np.asarray(mu_pred_s)
     mu_star_s = np.asarray(mu_star_s)
     for key in physics_samples:
@@ -385,12 +399,29 @@ def monte_carlo(
         "params_samples": params_s,
         "rel_intensity_samples": rel_intensity_s,
         "v_max_samples": v_max_s,
+        "v0_samples": v0_s,
         "physics_samples": physics_samples,
         "n_fail_fit": n_fail_fit,
     }
 
     return out
 
+def draw_systematics(
+        rng,
+        v_max: float,
+        *,
+        scale_percent: float,
+        linearity_percent: float,
+        offset_bins_sigma: float,
+        n_bins: int
+):
+    """Draw systematic variations for v_max and v0."""
+    sigma_rel = np.sqrt((scale_percent / 100.0) ** 2 + (linearity_percent / 100.0) ** 2)
+    v_max = float(rng.normal(v_max, v_max * sigma_rel))
+    dv = 2.0 * v_max / float(n_bins-1)
+    sigma_v0 = float(offset_bins_sigma) * dv
+    v0 = float(rng.normal(0.0, sigma_v0))
+    return v_max, v0
 
 def envelope_band(mu_samples, keep=0.68):
     """Envelope band around the median curve from mu_samples."""
@@ -422,7 +453,6 @@ def plot_results(
     *,
     title="Title",
     save_path="results/fit_plot.pdf",
-    sig_v=None,
     ci_lo=None,
     ci_hi=None,
     pi_hi=None,
@@ -442,7 +472,7 @@ def plot_results(
     )
     title_artist = ax1.set_title(title, pad=20)
     # --- data + fit ---
-    ax1.errorbar(v, y, xerr=sig_v, yerr=dy, fmt=".", ms=2, zorder=4)
+    ax1.errorbar(v, y, yerr=dy, fmt=".", ms=2, zorder=4)
     ax1.plot(v, y_fit, lw=1.3, label="Fit", zorder=5)
     for c in fit["centers"]:
         ax1.axvline(c, color="k", lw=0.8, ls=":", alpha=0.8)
@@ -575,10 +605,6 @@ PHYSICS_PRESENTATIONS = {
     },
 }
 
-def abs_velocity_error(v_max, v_err_percent, linearity_err_percent=0.0):
-    """Convert relative velocity error (%) to absolute (mm/s)."""
-    rel = np.sqrt((v_err_percent / 100.0) ** 2 + (linearity_err_percent / 100.0) ** 2)
-    return v_max * rel
 
 def main():
     measurements = [
@@ -588,7 +614,11 @@ def main():
             "file": "data/Fe_1950V_2d.asc",
             "n_peaks": 6,
             "v_max": 6.0,
-            "sig_v": abs_velocity_error(6.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {
                 "reference_bin_offset": True,
                 "hyperfine_field": True,
@@ -601,7 +631,11 @@ def main():
             "file": "data/Fe_1950V_9mms_1d_magn.asc",
             "n_peaks": 6,
             "v_max": 9.0,
-            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {
                 "hyperfine_field": True,
                 "excited_magnetic_moment": True,
@@ -609,11 +643,28 @@ def main():
         },
         {
             "suffix": "steel",
-            "label": "Stainless Steel",
+            "label": "Stainless Steel (4 mm/s)",
             "file": "data/stainless_steel_1950V_4mms_3d.asc",
             "n_peaks": 1,
             "v_max": 4.0,
-            "sig_v": abs_velocity_error(4.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
+            "physics": {"lifetime": True},
+        },
+        {
+            "suffix": "steel_9mms",
+            "label": "Stainless Steel (9 mm/s)",
+            "file": "data/stainless_1950V_9mms_2d.asc",
+            "n_peaks": 1,
+            "v_max": 9.0,
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {"lifetime": True},
         },
         {
@@ -622,7 +673,11 @@ def main():
             "file": "data/potassium_ferrocyanide_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {"isomer_shift": True},
         },
         {
@@ -631,7 +686,11 @@ def main():
             "file": "data/ferrous_sulphate_1950V_9mms_2d.asc",
             "n_peaks": 2,
             "v_max": 9.0,
-            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {"quadrupole": True},
         },
         {
@@ -640,12 +699,19 @@ def main():
             "file": "data/space_dust_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
+            "systematics": {
+                "scale_percent": 0.5,
+                "linearity_percent": 1.0,
+                "offset_bins_sigma": 0.25,
+            },
             "physics": {"isomer_shift": True},
         },
     ]
     ref_bin_samples = None
     for meas in measurements:
+        scale_percent = meas["systematics"]["scale_percent"]
+        linearity_percent = meas["systematics"]["linearity_percent"]
+        sigma_rel = np.sqrt((scale_percent / 100.0) ** 2 + (linearity_percent / 100.0) ** 2)
         print(f"Absorber: {meas['label']}")
         raw_counts = np.loadtxt(meas["file"])
         # perform Monte Carlo bootstrap
@@ -653,7 +719,7 @@ def main():
             raw_counts,
             n_peaks=meas["n_peaks"],
             v_max=meas["v_max"],
-            sig_v=meas["sig_v"],
+            systematics=meas["systematics"],
             physics=meas.get("physics", {}),
             reference_bin_offset_samples=ref_bin_samples,
             clip_start=2,
@@ -684,7 +750,7 @@ def main():
             med, qlo, qhi = summarize_samples(values, level=0.68)
             if key == "reference_bin_offset":
                 print(
-                    f"  Reference Velocity = {bin_offset_to_velocity(med, spec0.folded_half_len, meas['sig_v']):.6g} mm/s"
+                    f"  Reference Velocity = {bin_offset_to_velocity(med, spec0.folded_half_len, meas['v_max']):.6g} mm/s"
                 )
             print(
                 f"  {meta['name']} = {med:.6g} 68% CI [{qlo:.6g}, {qhi:.6g}] {meta['unit']} (deltas: +{(med - qlo):.6g}/-{(qhi - med):.6g})"
@@ -719,7 +785,6 @@ def main():
             physics=boot["physics_samples"],
             title=f"{meas['label']}: Lorentzian Fit and Monte Carlo CI",
             save_path=f"results/fit_plot_{meas['suffix']}_bootstrapCI.pdf",
-            sig_v=meas["sig_v"],
             ci_lo=ci_lo,
             ci_hi=ci_hi,
             pi_lo=pi_lo,
