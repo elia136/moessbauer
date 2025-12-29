@@ -66,7 +66,6 @@ class Spectrum:
         self.folded_idx = np.arange(half_len)[valid]
         self.folded_counts = folded_full[valid]
         self.folded_sigma = sigma_full[valid]
-
         return self.folded_counts, self.folded_sigma
 
 # ---- Velocity axis conversions ----
@@ -186,7 +185,7 @@ def make_bounds(n_peaks, v_max):
         upper += [np.inf, 20.0]
     return np.array(lower), np.array(upper)
 
-def fit_spectrum(spectrum, n_peaks, v_max, v_max_err=None, *, loss="wls"):
+def fit_spectrum(spectrum, n_peaks, v_max, *, loss="wls"):
     """Fit the folded Mössbauer spectrum using weighted least squares or Poisson deviance."""
     velocity = velocity_axis(spectrum, v_max)
     model = LorentzianModel(n_peaks)
@@ -237,7 +236,7 @@ def monte_carlo(
     *,
     physics: dict | None = None,
     reference_bin_offset_samples: np.ndarray | None = None,
-    v_max_err: float | None = None,
+    sig_v: float | None = None,
     model_systematic: bool = True,
     clip_start: int = 0,
     B: int = 500,
@@ -259,7 +258,6 @@ def monte_carlo(
         spec0,
         n_peaks=n_peaks,
         v_max=v_max,
-        v_max_err=None,
         loss=loss  # keep for diagnostics if you like
     )
     # masked velocity axis
@@ -288,8 +286,8 @@ def monte_carlo(
     for _ in range(B):
         # systematic: sample v_max
         v_max_b = v_max
-        if model_systematic and v_max_err is not None:
-            v_max_b = float(rng.normal(v_max, v_max_err))
+        if model_systematic and sig_v is not None:
+            v_max_b = float(rng.normal(v_max, sig_v))
         n_b = rng.poisson(mu0).astype(float)
         sigma_b = np.sqrt(np.clip(n_b, 1.0, np.inf))
         spec_b = Spectrum.from_folded(
@@ -305,7 +303,6 @@ def monte_carlo(
                 spec_b,
                 n_peaks=n_peaks,
                 v_max=v_max_b,
-                v_max_err=None,
                 loss=loss
             )
         except Exception:
@@ -425,6 +422,7 @@ def plot_results(
     *,
     title="Title",
     save_path="results/fit_plot.pdf",
+    sig_v=None,
     ci_lo=None,
     ci_hi=None,
     pi_hi=None,
@@ -444,7 +442,7 @@ def plot_results(
     )
     title_artist = ax1.set_title(title, pad=20)
     # --- data + fit ---
-    ax1.errorbar(v, y, yerr=dy, fmt=".", ms=2, zorder=4)
+    ax1.errorbar(v, y, xerr=sig_v, yerr=dy, fmt=".", ms=2, zorder=4)
     ax1.plot(v, y_fit, lw=1.3, label="Fit", zorder=5)
     for c in fit["centers"]:
         ax1.axvline(c, color="k", lw=0.8, ls=":", alpha=0.8)
@@ -577,6 +575,11 @@ PHYSICS_PRESENTATIONS = {
     },
 }
 
+def abs_velocity_error(v_max, v_err_percent, linearity_err_percent=0.0):
+    """Convert relative velocity error (%) to absolute (mm/s)."""
+    rel = np.sqrt((v_err_percent / 100.0) ** 2 + (linearity_err_percent / 100.0) ** 2)
+    return v_max * rel
+
 def main():
     measurements = [
         {
@@ -585,7 +588,7 @@ def main():
             "file": "data/Fe_1950V_2d.asc",
             "n_peaks": 6,
             "v_max": 6.0,
-            "v_max_err": 0.3,
+            "sig_v": abs_velocity_error(6.0, 0.5, 1.0),
             "physics": {
                 "reference_bin_offset": True,
                 "hyperfine_field": True,
@@ -598,7 +601,7 @@ def main():
             "file": "data/Fe_1950V_9mms_1d_magn.asc",
             "n_peaks": 6,
             "v_max": 9.0,
-            "v_max_err": 0.45,
+            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
             "physics": {
                 "hyperfine_field": True,
                 "excited_magnetic_moment": True,
@@ -610,7 +613,7 @@ def main():
             "file": "data/stainless_steel_1950V_4mms_3d.asc",
             "n_peaks": 1,
             "v_max": 4.0,
-            "v_max_err": 0.4,
+            "sig_v": abs_velocity_error(4.0, 0.5, 1.0),
             "physics": {"lifetime": True},
         },
         {
@@ -619,7 +622,7 @@ def main():
             "file": "data/potassium_ferrocyanide_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "v_max_err": 0.45,
+            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
             "physics": {"isomer_shift": True},
         },
         {
@@ -628,7 +631,7 @@ def main():
             "file": "data/ferrous_sulphate_1950V_9mms_2d.asc",
             "n_peaks": 2,
             "v_max": 9.0,
-            "v_max_err": 0.45,
+            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
             "physics": {"quadrupole": True},
         },
         {
@@ -637,7 +640,7 @@ def main():
             "file": "data/space_dust_1950V_9mms_2d.asc",
             "n_peaks": 1,
             "v_max": 9.0,
-            "v_max_err": 0.45,
+            "sig_v": abs_velocity_error(9.0, 0.5, 1.0),
             "physics": {"isomer_shift": True},
         },
     ]
@@ -650,7 +653,7 @@ def main():
             raw_counts,
             n_peaks=meas["n_peaks"],
             v_max=meas["v_max"],
-            v_max_err=meas["v_max_err"],
+            sig_v=meas["sig_v"],
             physics=meas.get("physics", {}),
             reference_bin_offset_samples=ref_bin_samples,
             clip_start=2,
@@ -681,7 +684,7 @@ def main():
             med, qlo, qhi = summarize_samples(values, level=0.68)
             if key == "reference_bin_offset":
                 print(
-                    f"  Reference Velocity = {bin_offset_to_velocity(med, spec0.folded_half_len, meas["v_max"]):.6g} mm/s"
+                    f"  Reference Velocity = {bin_offset_to_velocity(med, spec0.folded_half_len, meas['sig_v']):.6g} mm/s"
                 )
             print(
                 f"  {meta['name']} = {med:.6g} 68% CI [{qlo:.6g}, {qhi:.6g}] {meta['unit']} (deltas: +{(med - qlo):.6g}/-{(qhi - med):.6g})"
@@ -716,6 +719,7 @@ def main():
             physics=boot["physics_samples"],
             title=f"{meas['label']}: Lorentzian Fit and Monte Carlo CI",
             save_path=f"results/fit_plot_{meas['suffix']}_bootstrapCI.pdf",
+            sig_v=meas["sig_v"],
             ci_lo=ci_lo,
             ci_hi=ci_hi,
             pi_lo=pi_lo,

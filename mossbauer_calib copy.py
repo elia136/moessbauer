@@ -6,19 +6,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit 
 
-plt.rcParams.update({
-    "font.size": 14,
-    "axes.titlesize": 13,
-    "axes.labelsize": 14,
-    "xtick.labelsize": 13,
-    "ytick.labelsize": 13,
-    "legend.fontsize": 13,
-})
-
+plt.style.use("custom.mplstyle")
 
 # ---------------- CONFIG ----------------
 DATA_SUBDIR = "data"
-STYLE_FILE = "custom.mplstyle"
 
 PICKS_CSV = os.path.join("results", "picked_peaks.csv")
 OUT_SUBDIR = os.path.join("results", "calib_energy_plots")
@@ -307,7 +298,6 @@ def save_plot_channel(outpath, ch, y, title):
 
 def main():
     repo_root = find_git_root()
-    plt.style.use("./custom.mplstyle")
 
     data_dir = os.path.join(repo_root, DATA_SUBDIR)
     out_dir = os.path.join(repo_root, OUT_SUBDIR)
