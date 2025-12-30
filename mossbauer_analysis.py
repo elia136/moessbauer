@@ -484,7 +484,7 @@ def plot_results(
         ax1.fill_between(
             v, pi_lo, pi_hi, color="#4D4D4D", alpha=0.2, label="95% PI", zorder=2
         )
-    ax1.set_ylabel("Counts")
+    ax1.set_ylabel(r"Counts $($abs$)$")
     ax1.grid(True, zorder=0)
     ax1.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
@@ -502,6 +502,7 @@ def plot_results(
     title_box = title_artist.get_window_extent(fig.canvas.renderer)  # type: ignore
     title_y = title_box.y1 / fig.bbox.ymax
     fig.legend(loc="upper center", bbox_to_anchor=(0.5, title_y - 0.03), ncol=3)
+    fig.align_ylabels([ax1, ax2])
     plt.savefig(save_path, backend="pgf")
     plt.close()
 
@@ -607,6 +608,9 @@ PHYSICS_PRESENTATIONS = {
 
 
 def main():
+    scale_percent = 0.6
+    linearity_percent = 1.0
+    offset_bins_sigma = 0.5
     measurements = [
         {
             "suffix": "iron",
@@ -615,9 +619,9 @@ def main():
             "n_peaks": 6,
             "v_max": 6.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
             "physics": {
                 "reference_bin_offset": True,
@@ -632,9 +636,9 @@ def main():
             "n_peaks": 6,
             "v_max": 9.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
             "physics": {
                 "hyperfine_field": True,
@@ -648,9 +652,9 @@ def main():
             "n_peaks": 1,
             "v_max": 4.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
             "physics": {"lifetime": True},
         },
@@ -661,9 +665,9 @@ def main():
             "n_peaks": 1,
             "v_max": 9.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
             "physics": {"lifetime": True},
         },
@@ -674,44 +678,41 @@ def main():
             "n_peaks": 1,
             "v_max": 9.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
             "physics": {"isomer_shift": True},
         },
         {
             "suffix": "sulphate",
-            "label": "Ferrous Sulphate",
+            "label": "Ferrous Sulfate",
             "file": "data/ferrous_sulphate_1950V_9mms_2d.asc",
             "n_peaks": 2,
             "v_max": 9.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
-            "physics": {"quadrupole": True},
+            "physics": {"isomer_shift": True, "quadrupole": True},
         },
         {
             "suffix": "dust",
-            "label": "Mars Soil Simulant",
+            "label": "Mars Soil",
             "file": "data/space_dust_1950V_9mms_2d.asc",
-            "n_peaks": 1,
+            "n_peaks": 2,
             "v_max": 9.0,
             "systematics": {
-                "scale_percent": 0.5,
-                "linearity_percent": 1.0,
-                "offset_bins_sigma": 0.25,
+                "scale_percent": scale_percent,
+                "linearity_percent": linearity_percent,
+                "offset_bins_sigma": offset_bins_sigma,
             },
-            "physics": {"isomer_shift": True},
+            "physics": {"isomer_shift": True, "quadrupole": True},
         },
     ]
     ref_bin_samples = None
     for meas in measurements:
-        scale_percent = meas["systematics"]["scale_percent"]
-        linearity_percent = meas["systematics"]["linearity_percent"]
-        sigma_rel = np.sqrt((scale_percent / 100.0) ** 2 + (linearity_percent / 100.0) ** 2)
         print(f"Absorber: {meas['label']}")
         raw_counts = np.loadtxt(meas["file"])
         # perform Monte Carlo bootstrap

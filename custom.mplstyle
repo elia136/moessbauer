@@ -4,6 +4,8 @@
 # Set color cycle: blue, red, green, yellow, grey, violet
 axes.prop_cycle : cycler("color", ["#0072b9", "#d22630", "#007b61", "#474747", "#FF9500", "#9e9e9e"])
 
+axes.formatter.use_mathtext: True
+
 # Set default figure size for A4 (150x70 mm)
 figure.figsize : 5.91, 2.76
 figure.dpi : 200

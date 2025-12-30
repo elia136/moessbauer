@@ -4,6 +4,7 @@ import glob
 import csv
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.optimize import curve_fit 
 
 plt.style.use("custom.mplstyle")
@@ -249,14 +250,22 @@ def load_picks_csv(picks_csv_path):
             }
     return picks
 
+class ScalarFormatterOneDecimal(ScalarFormatter):
+    def _set_format(self):
+        # called internally once tick locations are known
+        self.format = r'%.1f'
 
 def save_plot_calibrated(outpath, energy_x, y, title):
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(3.283, 1.533))
     ax.plot(energy_x, y)
-    ax.set_title(title)
+    #ax.set_title(title)
     ax.set_xlabel("Energy (keV)")
     ax.set_ylabel("Counts")
-    ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+    fmt = ScalarFormatterOneDecimal(useMathText=True)
+    ax.yaxis.set_major_formatter(fmt)
+    fmt.set_scientific(True)
+    fmt.set_powerlimits((0, 0))   # always scientific (no switching)
+    fmt.set_useOffset(False) 
     ax.grid(True)
     fig.savefig(outpath, backend="pgf")
     plt.close(fig)
@@ -266,11 +275,15 @@ def save_plot_single_peak_label_only(outpath, ch, y, mu_peak, title):
     Plot vs channel, but label the x-axis as energy (keV) and show ONLY one tick:
     the picked peak position labeled '14.4'.
     """
-    fig, ax = plt.subplots()
-    ax.plot(ch, y)
-    ax.set_title(title)
+    fig, ax = plt.subplots(figsize=(3.283, 1.533))
+    ax.plot(ch.astype(float), y)
+    #ax.set_title(title)
     ax.set_ylabel("Counts")
-    ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+    fmt = ScalarFormatterOneDecimal(useMathText=True)
+    ax.yaxis.set_major_formatter(fmt)
+    fmt.set_scientific(True)
+    fmt.set_powerlimits((0, 0))   # always scientific (no switching)
+    fmt.set_useOffset(False) 
     ax.grid(True)
 
     # Keep the axis label, but show only one tick
@@ -286,12 +299,16 @@ def save_plot_single_peak_label_only(outpath, ch, y, mu_peak, title):
     plt.close(fig)
 
 def save_plot_channel(outpath, ch, y, title):
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(3.283, 1.533))
     ax.plot(ch, y)
-    ax.set_title(title)
+    #ax.set_title(title)
     ax.set_xlabel("Channel")
     ax.set_ylabel("Counts")
-    ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+    fmt = ScalarFormatterOneDecimal(useMathText=True)
+    ax.yaxis.set_major_formatter(fmt)
+    fmt.set_scientific(True)
+    fmt.set_powerlimits((0, 0))   # always scientific (no switching)
+    fmt.set_useOffset(False) 
     ax.grid(True)
     fig.savefig(outpath, backend="pgf")
     plt.close(fig)
@@ -319,7 +336,6 @@ def main():
         raise RuntimeError(f"No calibration files found in {data_dir}")
 
     summary_rows = []
-
     for fp in files:
         base = os.path.basename(fp)
         label = voltage_from_filename(fp)
@@ -333,7 +349,7 @@ def main():
         if mu_low is not None and mu_high is not None and mu_high < mu_low:
             mu_low, mu_high = mu_high, mu_low
 
-        outpath = os.path.join(out_dir, f"{label}_copy.pdf")
+        outpath = os.path.join(out_dir, f"{label}.pdf")
 
         # Case 1: two peaks -> true 2-point calibration
         if mu_low is not None and mu_high is not None:
@@ -383,7 +399,42 @@ def main():
             "mu_low_ch": "", "mu_high_ch": "",
             "mode": "none", "status": "NO_PICK"
         })
+    """
+    fig, axs = plt.subplots(3, 1, figsize=(5.91, 3.9), gridspec_kw={"hspace": 0.4})
+    title = axs[0].set_title("Mössbauer Energy Calibration Spectra", pad=20)
+    i = 0
+    for fp in [files[3], files[5], files[7]]:
+        base = os.path.basename(fp)
+        voltages = [1850, 1950, 2050]
+        ch, y = load_asc_1col(fp)
 
+        row = picks.get(base, None)
+        mu_low = row["mu_low"] if row else None
+        mu_high = row["mu_high"] if row else None
+
+        # Order-proof if both exist
+        if mu_low is not None and mu_high is not None and mu_high < mu_low:
+            mu_low, mu_high = mu_high, mu_low
+
+        a, b = compute_calibration_2pt(mu_low, mu_high)
+        energy = a * ch + b
+        axs[i].plot(energy, y, label="Data") if i==0 else axs[i].plot(energy, y)
+        axs[i].axvline(14.4, color="k", linestyle="dotted", label="14.4 keV Line") if i==0 else axs[i].axvline(14.4, color="k", linestyle="dotted")
+        axs[i].set_ylabel("Counts")
+        axs[i].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        axs[i].grid(True)
+        axs[i].annotate(f"{voltages[i]} V", xy=(0.89, 0.75), xycoords="axes fraction", fontsize=10,
+                          bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", lw=0.5))
+        i += 1
+            
+    axs[2].set_xlabel("Energy (keV)")
+    fig.canvas.draw()
+    title_box = title.get_window_extent(fig.canvas.renderer)  # type: ignore
+    title_y = title_box.y1 / fig.bbox.ymax
+    fig.legend(loc="upper center", bbox_to_anchor=(0.5, title_y - 0.03), ncol=2)
+    plt.savefig("results/calib_energy_plots/selected_calib_plots.pdf", backend="pgf")
+    plt.close()
+    """
     # Write summary
     summary_path = os.path.join(repo_root, SUMMARY_CSV)
     with open(summary_path, "w", newline="") as f:
@@ -398,7 +449,6 @@ def main():
 
     print(f"Saved plots to: {out_dir}")
     print(f"Saved summary to: {summary_path}")
-
 
 if __name__ == "__main__":
     main()
