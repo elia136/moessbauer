@@ -1,10 +1,1 @@
 file,label,mu_low_ch,mu_high_ch,mode,status
-1700V_calib_energy.asc,1700V,,60.741,label_only,OK_14.4_LABEL_ONLY
-1750V_calib_energy.asc,1750V,,64.193,label_only,OK_14.4_LABEL_ONLY
-1800V_calib_energy.asc,1800V,,86.629,label_only,OK_14.4_LABEL_ONLY
-1850V_calib_energy.asc,1850V,63.000,120.570,2pt,OK_2PT
-1900V_calib_energy.asc,1900V,84.328,172.345,2pt,OK_2PT
-1950V_calib_energy.asc,1950V,115.968,243.680,2pt,OK_2PT
-2000V_calib_energy.asc,2000V,167.743,362.187,2pt,OK_2PT
-2050V_calib_energy.asc,2050V,240.228,514.060,2pt,OK_2PT
-2100V_calib_energy.asc,2100V,350.106,746.472,2pt,OK_2PT

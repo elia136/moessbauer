@@ -526,10 +526,10 @@ def physics_hyperfine_field(centers):
 
 def physics_excited_magnetic_moment(centers):
     """Compute excited state magnetic moment from peak centers."""
-    dg = centers[5] - centers[0]
-    de = centers[4] - centers[1]
-    I_g, I_e = 0.5, 1.5
-    mu_e = MU_G * (I_e / I_g) * (np.abs(de) / np.abs(dg))
+    dv_16 = centers[5] - centers[0]
+    dv_25 = centers[4] - centers[1]
+    ratio = dv_16 / dv_25
+    mu_e = MU_G * (3 * (ratio - 1)) / (ratio - 3)
     return mu_e
 
 def physics_lifetime(fwhm):
